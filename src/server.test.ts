@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   createFakePluginHost,
   makeThreadResponse,
@@ -374,15 +375,34 @@ describe("lifecycle RPC", () => {
     },
   );
 
-  it("releases the agent session and only the terminals nobody used", async () => {
+  function loadReclaimPlugin() {
+    const hostRpc = vi.fn(async ({ method }: { method: string }) =>
+      method === "scan"
+        ? {
+            ports: [
+              { environmentId: "env_1", port: 3000, pid: 100, source: "process", ownerThreadId: "thr_1" },
+              { environmentId: "env_1", port: 3001, pid: 101, source: "process", ownerThreadId: "thr_other" },
+            ],
+          }
+        : { signalled: [3000], skipped: [], failed: [] },
+    );
     const { bb, harness } = createFakePluginHost({
       pluginId: "bb-sidebar",
+      experimental_callHostRpc: hostRpc,
       sdk: {
         threads: {
           list: async () => [],
+          get: async ({ threadId }: { threadId: string }) =>
+            makeThreadResponse({ id: threadId, environmentId: "env_1" }),
           unpin: async ({ threadId }: { threadId: string }) =>
             makeThreadResponse({ id: threadId }),
           stop: async () => ({ ok: true as const }),
+        },
+        environments: {
+          get: async () =>
+            ({ id: "env_1", path: "/workspace/sidebar", status: "ready", hostId: "host_1" }) as Awaited<
+              ReturnType<BbPluginApi["sdk"]["environments"]["get"]>
+            >,
         },
         terminals: {
           list: async () => ({
@@ -397,6 +417,11 @@ describe("lifecycle RPC", () => {
         },
       },
     });
+    return { bb, harness, hostRpc };
+  }
+
+  it("cleans up everything a manually settled thread left running", async () => {
+    const { bb, harness, hostRpc } = loadReclaimPlugin();
     await plugin(bb);
     disposers.push(() => harness.lifecycle.dispose());
 
@@ -404,14 +429,54 @@ describe("lifecycle RPC", () => {
       harness.behavior.callRpc("settle", { threadId: "thr_1" }),
     ).resolves.toEqual({
       ok: true,
-      reclaim: { closedTerminals: 1, keptTerminals: 1, stoppedRuntime: true },
+      reclaim: {
+        closedTerminals: 2,
+        keptTerminals: 0,
+        stoppedRuntime: true,
+        stoppedPorts: 1,
+      },
     });
     expect(harness.inspection.sdk.callsTo("threads.stop")).toEqual([
       [{ threadId: "thr_1" }],
     ]);
     expect(harness.inspection.sdk.callsTo("terminals.close")).toEqual([
+      [{ terminalId: "term_idle", mode: "force" }],
+      [{ terminalId: "term_used", mode: "force" }],
+    ]);
+    // Only the port this thread owns is stopped.
+    expect(hostRpc).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        method: "closeOwnedPorts",
+        input: expect.objectContaining({
+          threadId: "thr_1",
+          ports: [{ port: 3000, pid: 100 }],
+        }),
+      }),
+    );
+  });
+
+  it("parks a thread but leaves its used terminals and ports alone", async () => {
+    const { bb, harness, hostRpc } = loadReclaimPlugin();
+    await plugin(bb);
+    disposers.push(() => harness.lifecycle.dispose());
+
+    await expect(
+      harness.behavior.callRpc("park", { threadId: "thr_1" }),
+    ).resolves.toEqual({
+      ok: true,
+      reclaim: {
+        closedTerminals: 1,
+        keptTerminals: 1,
+        stoppedRuntime: true,
+        stoppedPorts: 0,
+      },
+    });
+    expect(harness.inspection.sdk.callsTo("terminals.close")).toEqual([
       [{ terminalId: "term_idle", mode: "if-clean" }],
     ]);
+    expect(hostRpc).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "closeOwnedPorts" }),
+    );
   });
 
   it("settles even when the runtime and terminals cannot be reached", async () => {
@@ -440,7 +505,12 @@ describe("lifecycle RPC", () => {
       harness.behavior.callRpc("settle", { threadId: "thr_1" }),
     ).resolves.toEqual({
       ok: true,
-      reclaim: { closedTerminals: 0, keptTerminals: 0, stoppedRuntime: false },
+      reclaim: {
+        closedTerminals: 0,
+        keptTerminals: 0,
+        stoppedRuntime: false,
+        stoppedPorts: 0,
+      },
     });
     const settled = (await harness.behavior.callRpc(
       "listLifecycle",

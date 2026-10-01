@@ -137,6 +137,7 @@ const reclaimSchema = z.object({
   closedTerminals: z.number().int().nonnegative(),
   keptTerminals: z.number().int().nonnegative(),
   stoppedRuntime: z.boolean(),
+  stoppedPorts: z.number().int().nonnegative(),
 });
 const orderedThreadIdsSchema = z
   .array(z.string().trim().min(1))
@@ -1015,7 +1016,10 @@ export default async function plugin(bb: BbPluginApi) {
   };
 
   /**
-   * Release what a settled thread was still holding.
+   * Release what a settled thread was still holding. `"everything"` is a
+   * manual settle: every terminal, forced, and the processes on ports the
+   * thread owns. `"idle"` is park, snooze and automatic settling: only
+   * terminals nobody typed in.
    *
    * Both settle paths refuse to park live work — the manual one through
    * `canPark`, the policy one through `cannotAutoSettle` — so stopping the
@@ -1025,6 +1029,7 @@ export default async function plugin(bb: BbPluginApi) {
    */
   const reclaimThreadResources = async (
     threadId: string,
+    scope: "idle" | "everything" = "idle",
   ): Promise<ReclaimSummary> => {
     let stoppedRuntime = false;
     try {
@@ -1040,11 +1045,17 @@ export default async function plugin(bb: BbPluginApi) {
       const { sessions } = await bb.sdk.terminals.list({
         scope: { kind: "thread", threadId },
       });
-      const plan = planTerminalReclaim(sessions);
+      const plan = planTerminalReclaim(
+        sessions,
+        scope === "everything" ? "all" : "untouched",
+      );
       keptTerminals = plan.keep;
       for (const terminalId of plan.close) {
         try {
-          await bb.sdk.terminals.close({ terminalId, mode: "if-clean" });
+          await bb.sdk.terminals.close({
+            terminalId,
+            mode: scope === "everything" ? "force" : "if-clean",
+          });
           closedTerminals += 1;
         } catch {
           // Someone typed into it between the list and the close.
@@ -1054,7 +1065,27 @@ export default async function plugin(bb: BbPluginApi) {
       // Leave the counts at zero rather than reporting a number we did not see.
     }
 
-    return { closedTerminals, keptTerminals, stoppedRuntime };
+    // After the terminals, so only processes they did not take down remain:
+    // servers the agent started in the background.
+    let stoppedPorts = 0;
+    if (scope === "everything") {
+      try {
+        const { ports } = await threadPortActions.getThreadPorts({ threadId });
+        if (ports.length > 0) {
+          const result = await threadPortActions.closeThreadPorts({
+            threadId,
+            ports,
+          });
+          stoppedPorts = new Set(result.signalled).size;
+        }
+      } catch {
+        // A thread with no workspace, or a host that cannot be reached.
+      } finally {
+        getOpenPorts.invalidate();
+      }
+    }
+
+    return { closedTerminals, keptTerminals, stoppedRuntime, stoppedPorts };
   };
 
   const applyPolicyChanges = db.transaction(
@@ -1206,7 +1237,9 @@ export default async function plugin(bb: BbPluginApi) {
     });
     // The shelf move is durable before anything is released, so a slow or
     // unreachable host delays the reminder without holding up the settle.
-    return reclaimThreadResources(threadId);
+    // A manual settle means the thread is finished: close everything it left
+    // running, the way archive does, and not only what nobody touched.
+    return reclaimThreadResources(threadId, "everything");
   };
 
   const unsettleThread = (threadId: string): void => {

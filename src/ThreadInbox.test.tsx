@@ -43,6 +43,7 @@ const SETTLED_NOTHING = {
   closedTerminals: 0,
   keptTerminals: 0,
   stoppedRuntime: false,
+  stoppedPorts: 0,
 };
 
 const defaultSidebarSettings = {
@@ -5361,6 +5362,7 @@ describe("row context menu", () => {
               closedTerminals: 1,
               keptTerminals: 2,
               stoppedRuntime: true,
+              stoppedPorts: 0,
             },
           }),
         },
@@ -5373,7 +5375,7 @@ describe("row context menu", () => {
         "Thread settled",
         expect.objectContaining({
           description:
-            "Agent session stopped · closed 1 terminal nobody used · 2 terminals left running",
+            "Agent session stopped · closed 1 terminal · 2 terminals left running",
           duration: 10_000,
         }),
       ),
@@ -5435,6 +5437,7 @@ describe("row context menu", () => {
               closedTerminals: 0,
               keptTerminals: 1,
               stoppedRuntime: true,
+              stoppedPorts: 0,
             },
           };
         },
@@ -5513,9 +5516,7 @@ describe("row context menu", () => {
     );
   });
 
-  it("asks to close owned ports after settling, and only closes on confirmation", async () => {
-    const ports = [{ port: 3000, pid: 123 }];
-    const close = vi.fn(() => ({ signalled: [3000], skipped: [], failed: [] }));
+  it("reports what settling cleaned up instead of asking about ports", async () => {
     renderSlot(inbox, listProps, {
       sidebarThreads: {
         status: "ready",
@@ -5524,17 +5525,31 @@ describe("row context menu", () => {
       },
       rpc: {
         listLifecycle: () => ({ rows: [] }),
-        settle: () => ({ ok: true, reclaim: SETTLED_NOTHING }),
-        getThreadPorts: () => ({ ports }),
-        closeThreadPorts: close,
+        settle: () => ({
+          ok: true,
+          reclaim: {
+            closedTerminals: 2,
+            keptTerminals: 0,
+            stoppedRuntime: true,
+            stoppedPorts: 1,
+          },
+        }),
       },
     });
     fireEvent.click(await screen.findByLabelText("Settle thread"));
-    await waitFor(() => expect(toastMocks.message).toHaveBeenCalledWith("Close this thread's ports?", expect.anything()));
-    expect(close).not.toHaveBeenCalled();
-    const options = toastMocks.message.mock.calls.find(([message]) => message === "Close this thread's ports?")![1];
-    await act(async () => options.action.onClick());
-    expect(close).toHaveBeenCalledWith({ threadId: "thr_ports", ports });
+    await waitFor(() =>
+      expect(toastMocks.success).toHaveBeenCalledWith(
+        "Thread settled",
+        expect.objectContaining({
+          description:
+            "Agent session stopped · closed 2 terminals · stopped processes on 1 port",
+        }),
+      ),
+    );
+    expect(toastMocks.message).not.toHaveBeenCalledWith(
+      "Close this thread's ports?",
+      expect.anything(),
+    );
   });
 
   it("supports Undo after settling and un-settling a thread", async () => {

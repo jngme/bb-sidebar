@@ -41,6 +41,19 @@ describe("planTerminalReclaim", () => {
     ).toEqual({ close: [], keep: 1 });
   });
 
+  it("closes every live terminal when told to close them all", () => {
+    expect(
+      planTerminalReclaim(
+        [
+          terminal({ id: "term_untouched" }),
+          terminal({ id: "term_used", lastUserInputAt: 1 }),
+          terminal({ id: "term_exited", status: "exited", lastUserInputAt: 1 }),
+        ],
+        "all",
+      ),
+    ).toEqual({ close: ["term_untouched", "term_used"], keep: 0 });
+  });
+
   it("plans nothing for a thread with no terminals", () => {
     expect(planTerminalReclaim([])).toEqual({ close: [], keep: 0 });
   });
@@ -53,6 +66,7 @@ describe("describeReclaim", () => {
         closedTerminals: 0,
         keptTerminals: 0,
         stoppedRuntime: false,
+        stoppedPorts: 0,
       }),
     ).toBeUndefined();
   });
@@ -63,6 +77,7 @@ describe("describeReclaim", () => {
         closedTerminals: 0,
         keptTerminals: 0,
         stoppedRuntime: true,
+        stoppedPorts: 0,
       }),
     ).toBe("Agent session stopped");
   });
@@ -73,10 +88,22 @@ describe("describeReclaim", () => {
         closedTerminals: 1,
         keptTerminals: 2,
         stoppedRuntime: true,
+        stoppedPorts: 0,
       }),
     ).toBe(
-      "Agent session stopped · closed 1 terminal nobody used · 2 terminals left running",
+      "Agent session stopped · closed 1 terminal · 2 terminals left running",
     );
+  });
+
+  it("names the ports whose processes a settle stopped", () => {
+    expect(
+      describeReclaim({
+        closedTerminals: 2,
+        keptTerminals: 0,
+        stoppedRuntime: true,
+        stoppedPorts: 1,
+      }),
+    ).toBe("Agent session stopped · closed 2 terminals · stopped processes on 1 port");
   });
 
   it("warns about surviving terminals even when nothing was closed", () => {
@@ -85,6 +112,7 @@ describe("describeReclaim", () => {
         closedTerminals: 0,
         keptTerminals: 1,
         stoppedRuntime: false,
+        stoppedPorts: 0,
       }),
     ).toBe("1 terminal left running");
   });

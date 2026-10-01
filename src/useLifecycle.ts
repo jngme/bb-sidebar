@@ -4,7 +4,6 @@ import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
 import { toast } from "sonner";
 import type { bbSidebarRpcContract } from "./server";
 import { describeReclaim } from "./reclaim";
-import { promptToCloseSettledPorts } from "./settled-port-prompt";
 import {
   canPark,
   formatSnoozeWakeTime,
@@ -178,7 +177,6 @@ export function useLifecycle(
   // changed. Only the newest request may write.
   const requestSeq = useRef(0);
   const inFlightThreadIds = useRef(new Set<string>());
-  const portPromptVersions = useRef(new Map<string, number>());
   const refresh = useCallback(async () => {
     const seq = ++requestSeq.current;
     try {
@@ -251,9 +249,6 @@ export function useLifecycle(
       const { method, threadId } = request;
       if (inFlightThreadIds.current.has(threadId)) return false;
       inFlightThreadIds.current.add(threadId);
-      const portPromptVersion = (portPromptVersions.current.get(threadId) ?? 0) + 1;
-      portPromptVersions.current.set(threadId, portPromptVersion);
-      toast.dismiss(`settled-ports:${threadId}`);
       let parkReminder: string | undefined;
       // An unsnooze clears the row server-side, so its wake time has to be
       // captured before the RPC; Undo re-snoozes with this absolute time to
@@ -311,17 +306,10 @@ export function useLifecycle(
           },
         });
       } else if (method === "settle") {
-        void promptToCloseSettledPorts(
-          threadId,
-          () => rpc.call("getThreadPorts", { threadId }),
-          (ports) => rpc.call("closeThreadPorts", { threadId, ports }),
-          () => portPromptVersions.current.get(threadId) === portPromptVersion,
-        );
-        // The reminder is the point of this toast: parking releases the agent
-        // session but leaves any terminal the user typed in alone, and that is
-        // only obvious if it is said out loud. Undo returns the thread to the
-        // inbox; it does not re-pin, because settle never records the pin it
-        // removed.
+        // The reminder says what settling closed: the agent session, every
+        // terminal, and the processes on the thread's ports. Undo returns the
+        // thread to the inbox but cannot bring those back; it does not re-pin
+        // either, because settle never records the pin it removed.
         toast.success(SUCCESS_MESSAGE.settle, {
           description: parkReminder,
           duration:

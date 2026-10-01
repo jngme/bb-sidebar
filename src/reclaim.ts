@@ -1,15 +1,21 @@
 /**
- * What settling a thread releases, and what it deliberately leaves alone.
+ * What parking a thread releases, and what it deliberately leaves alone.
  *
- * Settling is bookkeeping — it moves a row to a shelf. The one resource worth
- * releasing alongside it is the agent runtime, which bb keeps warm long after
- * the last turn and which costs hundreds of megabytes per thread. Terminals
- * are the awkward case: they outlive their thread until the daemon restarts,
- * but bb refuses to close one anybody has typed into unless the caller forces
- * it, and forcing would kill a dev server from an action the user reads as
- * tidying up. So settling closes only the terminals nobody touched, and
- * reports the rest instead of deciding for them.
+ * A manual settle means the thread is finished, so it cleans up everything:
+ * the agent runtime, every terminal (forced, like bb's archive), and the
+ * processes on ports the thread owns.
+ *
+ * Park, snooze and automatic settling are gentler. They release the agent
+ * runtime, which bb keeps warm long after the last turn and which costs
+ * hundreds of megabytes per thread. Terminals are the awkward case: they
+ * outlive their thread until the daemon restarts, but bb refuses to close one
+ * anybody has typed into unless the caller forces it, and forcing would kill a
+ * dev server the user is coming back to. So these close only the terminals
+ * nobody touched, and report the rest instead of deciding for them.
  */
+
+/** "untouched" closes terminals nobody typed in; "all" closes every one. */
+export type TerminalReclaimScope = "untouched" | "all";
 
 export interface ReclaimTerminal {
   id: string;
@@ -28,12 +34,15 @@ export interface ReclaimSummary {
   closedTerminals: number;
   keptTerminals: number;
   stoppedRuntime: boolean;
+  /** Ports whose owning process was asked to stop. */
+  stoppedPorts: number;
 }
 
 export const EMPTY_RECLAIM: ReclaimSummary = {
   closedTerminals: 0,
   keptTerminals: 0,
   stoppedRuntime: false,
+  stoppedPorts: 0,
 };
 
 /**
@@ -47,10 +56,13 @@ function isLive(terminal: ReclaimTerminal): boolean {
 
 export function planTerminalReclaim(
   terminals: readonly ReclaimTerminal[],
+  scope: TerminalReclaimScope = "untouched",
 ): TerminalReclaimPlan {
   const live = terminals.filter(isLive);
   const close = live
-    .filter((terminal) => terminal.lastUserInputAt === null)
+    .filter(
+      (terminal) => scope === "all" || terminal.lastUserInputAt === null,
+    )
     .map((terminal) => terminal.id);
   return { close, keep: live.length - close.length };
 }
@@ -67,7 +79,12 @@ export function describeReclaim(summary: ReclaimSummary): string | undefined {
   const parts: string[] = [];
   if (summary.stoppedRuntime) parts.push("Agent session stopped");
   if (summary.closedTerminals > 0) {
-    parts.push(`closed ${terminalCount(summary.closedTerminals)} nobody used`);
+    parts.push(`closed ${terminalCount(summary.closedTerminals)}`);
+  }
+  if (summary.stoppedPorts > 0) {
+    parts.push(
+      `stopped processes on ${summary.stoppedPorts} ${summary.stoppedPorts === 1 ? "port" : "ports"}`,
+    );
   }
   if (summary.keptTerminals > 0) {
     parts.push(`${terminalCount(summary.keptTerminals)} left running`);

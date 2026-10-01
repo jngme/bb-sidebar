@@ -9,6 +9,7 @@
 
 ### Changed
 
+- Settling a thread now cleans up everything it left running, from the sidebar or `bb sidebar settle`. Every terminal closes, including ones you typed into, as archive does, and the processes on ports the thread owns are stopped. The "Close this thread's ports?" prompt after a settle is gone. Park, snooze and automatic settling still close only the terminals nobody used.
 - A settled child thread leaves its parent and sits on the Settled shelf like any other settled thread. It no longer appears in the parent's child list, badge count, header popup, or hover card. Un-settling it, or new activity in it, brings it back under its parent. bb's parent link is unchanged.
 
 ## [0.2.26] - 2026-09-29

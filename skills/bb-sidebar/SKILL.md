@@ -17,9 +17,11 @@ bb sidebar unsettle <threadId...>
 ```
 
 - `settle` does what the sidebar's **Settle** action does: it unpins the
-  thread, clears any snooze, moves it to the Settled shelf, then stops its
-  idle agent session and closes terminals nobody typed into. Automatic settle
-  rules do not undo a manual settle.
+  thread, clears any snooze, moves it to the Settled shelf, then cleans up
+  everything it left running: it stops the agent session, force-closes every
+  terminal (including ones someone typed into), and stops the processes on
+  ports the thread owns. Unsettling does not bring those back. Automatic
+  settle rules do not undo a manual settle.
 - `unsettle` does what the sidebar's **Restore** action does on the Settled
   shelf: it returns the thread to the inbox and keeps automatic settle from
   moving it back until the thread has new activity. A thread that is not

@@ -59,6 +59,9 @@ function describeReclaim(reclaim: ReclaimSummary): string {
   if (reclaim.keptTerminals > 0) {
     parts.push(`kept ${plural(reclaim.keptTerminals, "terminal")} in use`);
   }
+  if (reclaim.stoppedPorts > 0) {
+    parts.push(`stopped processes on ${plural(reclaim.stoppedPorts, "port")}`);
+  }
   return parts.length === 0 ? "" : ` (${parts.join(", ")})`;
 }
 
