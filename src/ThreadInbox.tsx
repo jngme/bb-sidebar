@@ -38,6 +38,10 @@ import {
   useChildThreadDisplayValue,
 } from "./ChildThreadDisplay";
 import { useLifecycle, type LifecycleApi } from "./useLifecycle";
+import {
+  SettledChildrenContext,
+  type SettledChildren,
+} from "./settled-children";
 import { usePinnedReorder } from "./usePinnedReorder";
 import { useInboxReorder } from "./useInboxReorder";
 import { TRAILING_GLYPH_BOX_CLASS } from "./StatusSlot";
@@ -364,6 +368,7 @@ function visibleShelfThreads(
 function rootVisibleThreadId(
   threads: readonly PluginSidebarThread[],
   threadId: string | null,
+  isSettled: (thread: PluginSidebarThread) => boolean,
 ): string | null {
   if (threadId === null) return null;
   const visibleById = new Map(
@@ -372,7 +377,8 @@ function rootVisibleThreadId(
   let current = visibleById.get(threadId);
   if (!current) return threadId;
   const visited = new Set([current.id]);
-  while (current.parentThreadId) {
+  // A settled child has its own row on the Settled shelf, so it is the root.
+  while (current.parentThreadId && !isSettled(current)) {
     const parent = visibleById.get(current.parentThreadId);
     if (!parent || visited.has(parent.id)) break;
     visited.add(parent.id);
@@ -488,9 +494,13 @@ export function ThreadInbox({
     sidebarSettings,
     providerById,
   );
+  const isSettled = useCallback(
+    (thread: PluginSidebarThread) => lifecycle.shelfFor(thread) === "settled",
+    [lifecycle],
+  );
   const childrenByParentId = useMemo(
-    () => childThreadsByParent(threads, childDisplay.sort),
-    [threads, childDisplay.sort],
+    () => childThreadsByParent(threads, childDisplay.sort, isSettled),
+    [threads, childDisplay.sort, isSettled],
   );
   useEffect(() => {
     setExpandedChildParentIds((current) => {
@@ -501,8 +511,8 @@ export function ThreadInbox({
     });
   }, [childrenByParentId]);
   const activeListThreadId = useMemo(
-    () => rootVisibleThreadId(threads, activeThreadId),
-    [activeThreadId, threads],
+    () => rootVisibleThreadId(threads, activeThreadId, isSettled),
+    [activeThreadId, isSettled, threads],
   );
   const toggleChildExpansion = useCallback((parentThreadId: string) => {
     setExpandedChildParentIds((current) => {
@@ -529,8 +539,9 @@ export function ThreadInbox({
       scope === ALL_PROJECTS ? null : scope,
     );
     // Children live in their parent's header chip instead of the flat list;
-    // an orphan whose parent is not on screen stays here.
-    const visible = hideChildrenOfVisibleParents(scoped);
+    // an orphan whose parent is not on screen stays here, and so does a
+    // settled child, which belongs on the Settled shelf.
+    const visible = hideChildrenOfVisibleParents(scoped, isSettled);
     const active: typeof visible = [];
     const onParkedShelf: typeof visible = [];
     const onSnoozeShelf: typeof visible = [];
@@ -571,7 +582,7 @@ export function ThreadInbox({
       ),
       settled: sortSettledThreads(onSettledShelf, lifecycle.settledAtFor),
     };
-  }, [inactiveAfterHours, lifecycle, now, scope, threads]);
+  }, [inactiveAfterHours, isSettled, lifecycle, now, scope, threads]);
 
   const pinnedReorder = usePinnedReorder(allPinnedBase);
   const inboxReorder = useInboxReorder(allInboxBase);
@@ -1107,6 +1118,10 @@ export function ThreadInbox({
     void parkActiveThread(thread, () => lifecycle.park(thread.id));
   const settleThread = (thread: PluginSidebarThread) =>
     void parkActiveThread(thread, () => lifecycle.settle(thread.id));
+  const settledChildren: SettledChildren = {
+    isSettled,
+    settle: settleThread,
+  };
   const snoozeThread = (thread: PluginSidebarThread, until: number) =>
     void parkActiveThread(thread, () => lifecycle.snooze(thread.id, until));
 
@@ -1154,6 +1169,7 @@ export function ThreadInbox({
 
   return (
     <WorkingSinceContext.Provider value={workingSince}>
+    <SettledChildrenContext.Provider value={settledChildren}>
     <ChildThreadDisplayContext.Provider value={childDisplay}>
     <OpenPortsProvider>
     <JumpHintsContext.Provider value={jumpHints}>
@@ -1389,6 +1405,7 @@ export function ThreadInbox({
     </JumpHintsContext.Provider>
     </OpenPortsProvider>
     </ChildThreadDisplayContext.Provider>
+    </SettledChildrenContext.Provider>
     </WorkingSinceContext.Provider>
   );
 }

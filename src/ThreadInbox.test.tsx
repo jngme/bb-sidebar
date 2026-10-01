@@ -3941,6 +3941,145 @@ describe("ThreadInbox", () => {
   });
 });
 
+describe("settled child threads", () => {
+  function renderWithLifecycle(
+    threads: PluginSidebarThread[],
+    initiallySettled: string[] = [],
+  ) {
+    let settledIds = new Set(initiallySettled);
+    const calls: string[] = [];
+    const rendered = renderSlot(inbox, listProps, {
+      sidebarThreads: {
+        status: "ready",
+        threads,
+        projects: [{ id: "proj_1", name: "bb", isPersonal: false }],
+      },
+      providers: { status: "ready", providers: defaultProviders },
+      rpc: {
+        listLifecycle: () => ({
+          rows: [...settledIds].map((threadId) => ({
+            threadId,
+            settledAt: Date.now(),
+            settledOverride: "settled",
+            snoozedUntil: null,
+            snoozedAt: null,
+          })),
+        }),
+        settle: (input) => {
+          const { threadId } = input as { threadId: string };
+          calls.push(`settle:${threadId}`);
+          settledIds = new Set([...settledIds, threadId]);
+          return { ok: true, reclaim: SETTLED_NOTHING };
+        },
+        unsettle: (input) => {
+          const { threadId } = input as { threadId: string };
+          calls.push(`unsettle:${threadId}`);
+          settledIds = new Set([...settledIds].filter((id) => id !== threadId));
+          return { ok: true };
+        },
+      },
+    });
+    return { calls, rendered };
+  }
+
+  const family = [
+    thread({ id: "parent", title: "Parent" }),
+    thread({ id: "done", title: "Done child", parentThreadId: "parent", createdAt: 10 }),
+    thread({ id: "other", title: "Other child", parentThreadId: "parent", createdAt: 20 }),
+  ];
+
+  it("settles a child from its row and moves it to the Settled shelf", async () => {
+    const { calls, rendered } = renderWithLifecycle(family);
+    fireEvent.click(await screen.findByRole("button", { name: "2 child threads" }));
+
+    fireEvent.contextMenu(
+      screen.getByRole("button", { name: "Open child thread: Done child" }),
+    );
+    fireEvent.click(
+      within(await screen.findByRole("menu", { name: "Thread actions" })).getByText(
+        "Settle",
+      ),
+    );
+
+    await waitFor(() => expect(calls).toEqual(["settle:done"]));
+    // The backend publishes every lifecycle write; that is what refreshes rows.
+    await rendered.emitRealtime("lifecycle", { threadId: "done" });
+    const shelf = await screen.findByRole("region", { name: "Settled" });
+    expect(within(shelf).getByText(/Settled \(1\)/)).toBeDefined();
+    fireEvent.click(within(shelf).getByRole("button"));
+    expect(within(shelf).getByText("Done child")).toBeDefined();
+    // The parent keeps only the child that is still in play.
+    expect(screen.getByRole("button", { name: "1 child thread" })).toBeDefined();
+    expect(
+      screen.queryByRole("button", { name: "Open child thread: Done child" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Open child thread: Other child" }),
+    ).toBeDefined();
+  });
+
+  it("offers no Settle on a child that is still working", async () => {
+    renderWithLifecycle([
+      thread({ id: "parent", title: "Parent" }),
+      thread({
+        id: "busy",
+        title: "Busy child",
+        parentThreadId: "parent",
+        indicator: "runtime",
+      }),
+    ]);
+
+    fireEvent.contextMenu(
+      await screen.findByRole("button", { name: /^Open child thread: Busy child/ }),
+    );
+    const menu = await screen.findByRole("menu", { name: "Thread actions" });
+    expect(within(menu).queryByText("Settle")).toBeNull();
+  });
+
+  it("brings an unsettled child back under its parent", async () => {
+    const { calls, rendered } = renderWithLifecycle(family, ["done"]);
+    const shelf = await screen.findByRole("region", { name: "Settled" });
+    expect(screen.getByRole("button", { name: "1 child thread" })).toBeDefined();
+    fireEvent.click(within(shelf).getByRole("button"));
+
+    fireEvent.contextMenu(within(shelf).getByText("Done child"));
+    fireEvent.click(
+      within(await screen.findByRole("menu", { name: "Thread actions" })).getByText(
+        "Un-settle",
+      ),
+    );
+
+    await waitFor(() => expect(calls).toEqual(["unsettle:done"]));
+    await rendered.emitRealtime("lifecycle", { threadId: "done" });
+    expect(
+      await screen.findByRole("button", { name: "2 child threads" }),
+    ).toBeDefined();
+    expect(screen.queryByRole("region", { name: "Settled" })).toBeNull();
+  });
+
+  it("keeps a settled child under its parent while it is working", async () => {
+    renderWithLifecycle(
+      [
+        thread({ id: "parent", title: "Parent" }),
+        thread({
+          id: "busy",
+          title: "Busy child",
+          parentThreadId: "parent",
+          indicator: "runtime",
+        }),
+      ],
+      ["busy"],
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "1 child thread, 1 working" }),
+      ).toBeDefined(),
+    );
+    expect(screen.queryByRole("region", { name: "Settled" })).toBeNull();
+  });
+});
+
 describe("parking threads", () => {
   it("moves a settled thread to the Settled shelf", async () => {
     renderSlot(inbox, listProps, {

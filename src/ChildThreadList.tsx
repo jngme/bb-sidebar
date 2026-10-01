@@ -14,6 +14,7 @@ import { useWorkingSinceContext } from "./useWorkingSince";
 import { threadDisplayTitle } from "./inbox";
 import { canParkThread } from "./lifecycle";
 import { RowContextMenu } from "./RowContextMenu";
+import { useSettledChildren } from "./settled-children";
 import { InlineThreadTitle } from "./InlineThreadTitle";
 import { ThreadDetailsTooltip } from "./ThreadDetailsTooltip";
 import { OpenPortsIndicator } from "./OpenPorts";
@@ -35,15 +36,19 @@ import { ProviderGlyph } from "./ProviderGlyph";
 
 const MAX_CHILD_DOTS = 3;
 
+/** Settled children sit on the Settled shelf, not under their parent. */
 export function childrenOf(
   threads: readonly PluginSidebarThread[],
   parentThreadId: string,
   sort: ChildThreadSort = childThreadSortOf(null),
+  isSettled: (thread: PluginSidebarThread) => boolean = () => false,
 ): PluginSidebarThread[] {
   return threads
     .filter(
       (thread) =>
-        !thread.isArchived && thread.parentThreadId === parentThreadId,
+        !thread.isArchived &&
+        thread.parentThreadId === parentThreadId &&
+        !isSettled(thread),
     )
     .sort(compareChildThreads(sort));
 }
@@ -51,10 +56,13 @@ export function childrenOf(
 export function childThreadsByParent(
   threads: readonly PluginSidebarThread[],
   sort: ChildThreadSort = childThreadSortOf(null),
+  isSettled: (thread: PluginSidebarThread) => boolean = () => false,
 ): ReadonlyMap<string, readonly PluginSidebarThread[]> {
   const result = new Map<string, PluginSidebarThread[]>();
   for (const thread of threads) {
-    if (thread.isArchived || !thread.parentThreadId) continue;
+    if (thread.isArchived || !thread.parentThreadId || isSettled(thread)) {
+      continue;
+    }
     const siblings = result.get(thread.parentThreadId) ?? [];
     siblings.push(thread);
     result.set(thread.parentThreadId, siblings);
@@ -428,11 +436,14 @@ function ChildThreadRow({
   );
   const [isRenaming, setIsRenaming] = useState(false);
   const RowAction = isRenaming ? "div" : "button";
+  const { settle } = useSettledChildren();
+  const canPark = canParkThread(thread);
 
   return (
     <RowContextMenu
       thread={thread}
-      canArchive={canParkThread(thread)}
+      canArchive={canPark}
+      onSettle={settle && canPark ? () => settle(thread) : undefined}
       onRename={() => setIsRenaming(true)}
     >
       <div

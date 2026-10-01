@@ -44,3 +44,6 @@ does not exist fails without stopping the others.
   messages, or background agents. Wait for the thread to go idle first. A
   thread cannot settle itself while its turn is running.
 - Settling a thread does not archive it. Use `bb thread archive` for that.
+- A settled child thread leaves its parent's child list for the Settled
+  shelf, and `unsettle` puts it back under its parent. Its parent link in bb
+  does not change.

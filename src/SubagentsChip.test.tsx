@@ -114,6 +114,36 @@ afterEach(() => {
 });
 
 describe("SubagentsChip", () => {
+  it("leaves settled children out of the header chip", async () => {
+    renderSlot(
+      childrenChip,
+      { threadId: "parent", projectId: "proj_1", isCompactViewport: false },
+      {
+        sidebarThreads: {
+          status: "ready",
+          threads: orderedChildren,
+          projects: [{ id: "proj_1", name: "bb", isPersonal: false }],
+        },
+        rpc: {
+          listLifecycle: () => ({
+            rows: [
+              {
+                threadId: "old",
+                settledAt: Date.now(),
+                settledOverride: "settled",
+                snoozedUntil: null,
+                snoozedAt: null,
+              },
+            ],
+          }),
+        },
+      },
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "1 child thread" }));
+    expect(childRowNames()).toEqual(["Open child thread: New"]);
+  });
+
   it.each([false, true])("loads execution details only on hover and handles failure=%s", async (fail) => {
     let requests = 0;
     renderSlot(

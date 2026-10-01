@@ -121,15 +121,20 @@ export function partitionPinned(threads: readonly PluginSidebarThread[]): {
  *
  * A child is only hidden when its parent is actually on screen. An orphan
  * (parent archived, deleted, or filtered out by the project scope) stays in
- * the list, because hiding it would make it unreachable everywhere.
+ * the list, because hiding it would make it unreachable everywhere. A settled
+ * child stays too: it is done, so it leaves its parent for the Settled shelf
+ * like any other settled thread, and comes back once it is unsettled.
  */
 export function hideChildrenOfVisibleParents(
   threads: readonly PluginSidebarThread[],
+  isSettled: (thread: PluginSidebarThread) => boolean = () => false,
 ): PluginSidebarThread[] {
   const visibleIds = new Set(threads.map((thread) => thread.id));
   return threads.filter(
     (thread) =>
-      thread.parentThreadId === null || !visibleIds.has(thread.parentThreadId),
+      thread.parentThreadId === null ||
+      !visibleIds.has(thread.parentThreadId) ||
+      isSettled(thread),
   );
 }
 

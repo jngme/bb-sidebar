@@ -18,6 +18,7 @@ import { PROJECT_ICONS_CHANNEL, projectIconUrl } from "./project-icons";
 import { OpenPortDetails } from "./OpenPorts";
 import { ThreadPullRequestDetails } from "./ThreadPullRequests";
 import { compareChildThreads, useChildThreadDisplay } from "./ChildThreadDisplay";
+import { useSettledChildren } from "./settled-children";
 
 export function ThreadDetailsTooltip({
   thread,
@@ -61,6 +62,7 @@ export function ThreadDetailsTooltip({
   }, [call, thread.id, visible]);
 
   const { sort: childSort } = useChildThreadDisplay();
+  const { isSettled } = useSettledChildren();
   const provider = providers.find((entry) => entry.id === thread.providerId);
   const project = projects.find((entry) => entry.id === thread.projectId);
   const isWorktree =
@@ -68,7 +70,7 @@ export function ThreadDetailsTooltip({
     thread.environment?.workspaceDisplayKind === "unmanaged-worktree";
   const status = thread.hasPendingInteraction ? "Needs you" : thread.indicatorLabel ?? "Idle";
   const subthreads = visible ? threads
-    .filter((child) => !child.isArchived && child.parentThreadId === thread.id && child.id !== thread.id)
+    .filter((child) => !child.isArchived && child.parentThreadId === thread.id && child.id !== thread.id && !isSettled(child))
     .sort(compareChildThreads(childSort)) : [];
   const label = (
     <div className="flex flex-col gap-2">

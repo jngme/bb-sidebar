@@ -244,6 +244,37 @@ describe("child threads", () => {
     expect(visible.map((t) => t.id)).toEqual(["child"]);
   });
 
+  it("keeps a settled child in the flat list so it reaches the Settled shelf", () => {
+    const visible = hideChildrenOfVisibleParents(
+      [
+        thread({ id: "parent" }),
+        thread({ id: "child", parentThreadId: "parent" }),
+        thread({ id: "settled", parentThreadId: "parent" }),
+      ],
+      (candidate) => candidate.id === "settled",
+    );
+    expect(visible.map((t) => t.id)).toEqual(["parent", "settled"]);
+  });
+
+  it("leaves settled children out of their parent's children", () => {
+    const threads = [
+      thread({ id: "parent" }),
+      thread({ id: "child", parentThreadId: "parent" }),
+      thread({ id: "settled", parentThreadId: "parent" }),
+      thread({ id: "grandchild", parentThreadId: "settled" }),
+    ];
+    const isSettled = (candidate: PluginSidebarThread) =>
+      candidate.id === "settled";
+
+    expect(
+      childrenOf(threads, "parent", undefined, isSettled).map((t) => t.id),
+    ).toEqual(["child"]);
+    const byParent = childThreadsByParent(threads, undefined, isSettled);
+    expect(byParent.get("parent")?.map((t) => t.id)).toEqual(["child"]);
+    // The settled child keeps its own children on the Settled shelf.
+    expect(byParent.get("settled")?.map((t) => t.id)).toEqual(["grandchild"]);
+  });
+
   it("lists a thread's children oldest first", () => {
     const children = childrenOf(
       [

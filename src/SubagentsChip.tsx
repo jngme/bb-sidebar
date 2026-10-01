@@ -1,11 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   experimental_useProviders as useProviders,
   experimental_useSidebarThreadActions as useSidebarThreadActions,
   experimental_useSidebarThreads as useSidebarThreads,
+  type PluginSidebarThread,
   type PluginThreadHeaderActionProps,
 } from "@get-bb/plugin-sdk/app";
 import { useSidebarSettings } from "./useSidebarSettings";
+import { useLifecycle } from "./useLifecycle";
+import {
+  SettledChildrenContext,
+  type SettledChildren,
+} from "./settled-children";
 import {
   ChildThreadDots,
   ChildThreadList,
@@ -47,10 +53,22 @@ export function SubagentsChip({
     sidebarSettings,
     providerById,
   );
-  const children = childrenOf(threads, threadId, childDisplay.sort);
+  const lifecycle = useLifecycle(threads);
+  const isSettled = useCallback(
+    (thread: PluginSidebarThread) => lifecycle.shelfFor(thread) === "settled",
+    [lifecycle],
+  );
+  const settledChildren = useMemo<SettledChildren>(
+    () => ({
+      isSettled,
+      settle: (thread) => void lifecycle.settle(thread.id),
+    }),
+    [isSettled, lifecycle],
+  );
+  const children = childrenOf(threads, threadId, childDisplay.sort, isSettled);
   const childrenByParent = useMemo(
-    () => childThreadsByParent(threads, childDisplay.sort),
-    [threads, childDisplay.sort],
+    () => childThreadsByParent(threads, childDisplay.sort, isSettled),
+    [threads, childDisplay.sort, isSettled],
   );
   useEffect(() => {
     setOpen(false);
@@ -70,6 +88,7 @@ export function SubagentsChip({
 
   return (
     <ChildThreadDisplayContext.Provider value={childDisplay}>
+    <SettledChildrenContext.Provider value={settledChildren}>
       <Popover open={open} onOpenChange={setOpen}>
         <Tooltip label={threadCountLabel} side="bottom">
           <PopoverTrigger asChild>
@@ -123,6 +142,7 @@ export function SubagentsChip({
           </div>
         </PopoverContent>
       </Popover>
+    </SettledChildrenContext.Provider>
     </ChildThreadDisplayContext.Provider>
   );
 }

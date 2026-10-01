@@ -5,6 +5,11 @@
 ### Added
 
 - `bb sidebar settle <threadId...>` and `bb sidebar unsettle <threadId...>` let agents and scripts settle threads and restore them, the same as the sidebar's **Settle** and **Restore** actions. Each takes up to 50 thread ids and reports one line per thread. `settle` refuses a thread that is still working. The plugin now ships a `bb-sidebar` skill that documents the commands for agents.
+- Child thread rows have **Settle** in their right-click menu, under a parent card and in the thread header's children popup. Like a top-level row, a child that is still working offers no Settle.
+
+### Changed
+
+- A settled child thread leaves its parent and sits on the Settled shelf like any other settled thread. It no longer appears in the parent's child list, badge count, header popup, or hover card. Un-settling it, or new activity in it, brings it back under its parent. bb's parent link is unchanged.
 
 ## [0.2.26] - 2026-09-29
 
