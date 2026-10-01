@@ -633,6 +633,135 @@ describe("lifecycle RPC", () => {
   });
 });
 
+describe("sidebar CLI", () => {
+  async function loadCliPlugin(
+    threads: Record<string, Partial<ReturnType<typeof makeThreadResponse>>> = {
+      thr_1: {},
+      thr_2: {},
+    },
+  ) {
+    const harness = await loadPlugin();
+    harness.inspection.sdk.stub("threads.get", async ({ threadId }) => {
+      const overrides = threads[threadId];
+      if (overrides === undefined) throw new Error(`Thread not found: ${threadId}`);
+      return makeThreadResponse({ id: threadId, ...overrides });
+    });
+    return harness;
+  }
+
+  async function lifecycleRows(harness: Awaited<ReturnType<typeof loadPlugin>>) {
+    return ((await harness.behavior.callRpc("listLifecycle", {})) as LifecycleListResult).rows;
+  }
+
+  it("settles several threads the way the sidebar does", async () => {
+    const harness = await loadCliPlugin();
+
+    await expect(
+      harness.behavior.runCli(["settle", "thr_1", "thr_2", "thr_1"]),
+    ).resolves.toEqual({
+      exitCode: 0,
+      stdout: "settled thr_1\nsettled thr_2\n",
+      stderr: "",
+    });
+    expect(harness.inspection.sdk.callsTo("threads.unpin")).toEqual([
+      [{ threadId: "thr_1" }],
+      [{ threadId: "thr_2" }],
+    ]);
+    expect(await lifecycleRows(harness)).toEqual([
+      expect.objectContaining({
+        threadId: "thr_1",
+        settledAt: expect.any(Number),
+        settledOverride: "settled",
+      }),
+      expect.objectContaining({
+        threadId: "thr_2",
+        settledAt: expect.any(Number),
+        settledOverride: "settled",
+      }),
+    ]);
+  });
+
+  it("unsettles like the sidebar's restore and leaves unsettled threads alone", async () => {
+    const harness = await loadCliPlugin();
+    await harness.behavior.callRpc("settle", { threadId: "thr_1" });
+
+    await expect(
+      harness.behavior.runCli(["unsettle", "thr_1", "thr_2"]),
+    ).resolves.toEqual({
+      exitCode: 0,
+      stdout: "unsettled thr_1\nthr_2 was not settled; left unchanged\n",
+      stderr: "",
+    });
+    expect(await lifecycleRows(harness)).toEqual([
+      expect.objectContaining({
+        threadId: "thr_1",
+        settledAt: null,
+        settledOverride: "active",
+      }),
+    ]);
+  });
+
+  it("reports unknown and working threads but settles the rest", async () => {
+    const harness = await loadCliPlugin({
+      thr_1: {},
+      thr_busy: { status: "active" },
+    });
+
+    await expect(
+      harness.behavior.runCli(["settle", "thr_missing", "thr_1", "thr_busy"]),
+    ).resolves.toEqual({
+      exitCode: 1,
+      stdout: "settled thr_1\n",
+      stderr:
+        "settle failed for thr_missing: unknown thread\n" +
+        "settle failed for thr_busy: still working; settle it once it is idle\n",
+    });
+    expect(harness.inspection.sdk.callsTo("threads.unpin")).toEqual([
+      [{ threadId: "thr_1" }],
+    ]);
+    await expect(
+      harness.behavior.runCli(["unsettle", "thr_missing"]),
+    ).resolves.toMatchObject({
+      exitCode: 1,
+      stderr: "unsettle failed for thr_missing: unknown thread\n",
+    });
+    expect(await lifecycleRows(harness)).toEqual([
+      expect.objectContaining({ threadId: "thr_1" }),
+    ]);
+  });
+
+  it.each([
+    [["settle"], "Missing thread id"],
+    [["settle", "not-a-thread"], 'Invalid thread id: "not-a-thread"'],
+    [["settle", "thr_1", "--force"], "Unknown option: --force"],
+    [["archive", "thr_1"], "Unknown command: archive"],
+    [
+      ["settle", ...Array.from({ length: 51 }, (_, index) => `thr_${index}`)],
+      "Too many thread ids: 51",
+    ],
+  ])("rejects %j before touching any thread", async (argv, message) => {
+    const harness = await loadCliPlugin();
+
+    const result = await harness.behavior.runCli(argv);
+    expect(result.exitCode).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(message);
+    expect(harness.inspection.sdk.callsTo("threads.get")).toEqual([]);
+    expect(await lifecycleRows(harness)).toEqual([]);
+  });
+
+  it("prints help", async () => {
+    const harness = await loadCliPlugin();
+
+    for (const argv of [[], ["--help"], ["settle", "--help"]]) {
+      await expect(harness.behavior.runCli(argv)).resolves.toMatchObject({
+        exitCode: 0,
+        stdout: expect.stringContaining("bb sidebar settle <threadId...>"),
+      });
+    }
+  });
+});
+
 describe("project icons", () => {
   it("stores per-project choices and searches only supported image files", async () => {
     const project = standardProject();

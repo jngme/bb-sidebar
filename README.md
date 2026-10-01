@@ -31,6 +31,17 @@ bb plugin install git:https://github.com/yusuf8834/bb-sidebar.git
 
 Then choose **BB Sidebar** under **Settings > Appearance > Sidebar**.
 
+## Command line
+
+Agents and scripts can settle threads the same way the sidebar does:
+
+```sh
+bb sidebar settle <threadId...>
+bb sidebar unsettle <threadId...>
+```
+
+`settle` matches the **Settle** action. `unsettle` matches **Restore** on the Settled shelf. Each takes up to 50 thread ids. `settle` refuses a thread that is still working. See [skills/bb-sidebar/SKILL.md](skills/bb-sidebar/SKILL.md) for output and exit codes.
+
 ## Development
 
 ```sh

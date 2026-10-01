@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `bb sidebar settle <threadId...>` and `bb sidebar unsettle <threadId...>` let agents and scripts settle threads and restore them, the same as the sidebar's **Settle** and **Restore** actions. Each takes up to 50 thread ids and reports one line per thread. `settle` refuses a thread that is still working. The plugin now ships a `bb-sidebar` skill that documents the commands for agents.
+
 ## [0.2.26] - 2026-09-29
 
 ### Added

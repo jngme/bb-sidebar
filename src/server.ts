@@ -13,6 +13,7 @@ import {
   type AutoSettlePullRequest,
   type SettledOverride,
 } from "./auto-settle";
+import { registerSettleCli } from "./settle-cli";
 import { runThreadTasks } from "./thread-tasks";
 import {
   EMPTY_RECLAIM,
@@ -1188,6 +1189,43 @@ export default async function plugin(bb: BbPluginApi) {
     await evaluatePolicies();
   });
 
+  const settleThread = async (threadId: string): Promise<ReclaimSummary> => {
+    // Native pinning and this plugin's settled shelf are competing ways to
+    // keep a thread out of the ordinary inbox. Settling wins, and a failed
+    // unpin leaves the lifecycle row untouched instead of half-applying it.
+    await bb.sdk.threads.unpin({ threadId });
+    // Settling clears any snooze: they are two answers to the same
+    // question, and holding both would make the shelf order ambiguous.
+    const now = Date.now();
+    write({
+      threadId,
+      settledAt: now,
+      settledOverride: "settled",
+      snoozedUntil: null,
+      snoozedAt: null,
+    });
+    // The shelf move is durable before anything is released, so a slow or
+    // unreachable host delays the reminder without holding up the settle.
+    return reclaimThreadResources(threadId);
+  };
+
+  const unsettleThread = (threadId: string): void => {
+    const current = readOne(threadId);
+    write({
+      threadId,
+      settledAt: null,
+      settledOverride: "active",
+      snoozedUntil: current?.snoozedUntil ?? null,
+      snoozedAt: current?.snoozedAt ?? null,
+    });
+  };
+
+  registerSettleCli(bb, {
+    isSettled: (threadId) => readOne(threadId)?.settledAt != null,
+    settle: settleThread,
+    unsettle: unsettleThread,
+  });
+
   bb.rpc.register(bbSidebarRpcContract, {
     getOpenPorts,
     getThreadPorts: threadPortActions.getThreadPorts,
@@ -1280,33 +1318,10 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true };
     },
     async settle({ threadId }) {
-      // Native pinning and this plugin's settled shelf are competing ways to
-      // keep a thread out of the ordinary inbox. Settling wins, and a failed
-      // unpin leaves the lifecycle row untouched instead of half-applying it.
-      await bb.sdk.threads.unpin({ threadId });
-      // Settling clears any snooze: they are two answers to the same
-      // question, and holding both would make the shelf order ambiguous.
-      const now = Date.now();
-      write({
-        threadId,
-        settledAt: now,
-        settledOverride: "settled",
-        snoozedUntil: null,
-        snoozedAt: null,
-      });
-      // The shelf move is durable before anything is released, so a slow or
-      // unreachable host delays the reminder without holding up the settle.
-      return { ok: true, reclaim: await reclaimThreadResources(threadId) };
+      return { ok: true, reclaim: await settleThread(threadId) };
     },
     async unsettle({ threadId }) {
-      const current = readOne(threadId);
-      write({
-        threadId,
-        settledAt: null,
-        settledOverride: "active",
-        snoozedUntil: current?.snoozedUntil ?? null,
-        snoozedAt: current?.snoozedAt ?? null,
-      });
+      unsettleThread(threadId);
       return { ok: true };
     },
     async snooze({ threadId, snoozedUntil }) {

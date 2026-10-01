@@ -37,6 +37,7 @@
   "files": [
     "dist",
     "src",
+    "skills",
     "app.tsx",
     "tsconfig.json",
     "README.md",
