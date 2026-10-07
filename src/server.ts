@@ -6,6 +6,7 @@
 // understands. Here, uninstalling the plugin removes its state with it.
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { registerDeferredSettle } from "./deferred-settle";
 import {
   autoSettleNeedsPullRequest,
   decideAutoSettle,
@@ -93,6 +94,7 @@ const migrations = [
      ADD COLUMN child_sort_direction TEXT NOT NULL DEFAULT 'ascending'`,
   `ALTER TABLE sidebar_settings
      ADD COLUMN child_icon_style TEXT NOT NULL DEFAULT 'disc'`,
+  `CREATE TABLE IF NOT EXISTS deferred_settle (thread_id TEXT PRIMARY KEY, token TEXT NOT NULL)`,
 ];
 
 export interface StoredLifecycleRow {
@@ -1220,11 +1222,13 @@ export default async function plugin(bb: BbPluginApi) {
     await evaluatePolicies();
   });
 
-  const settleThread = async (threadId: string): Promise<ReclaimSummary> => {
+  const settleThread = async (threadId: string, beforeCommit?: () => Promise<void>): Promise<ReclaimSummary> => {
     // Native pinning and this plugin's settled shelf are competing ways to
     // keep a thread out of the ordinary inbox. Settling wins, and a failed
     // unpin leaves the lifecycle row untouched instead of half-applying it.
     await bb.sdk.threads.unpin({ threadId });
+    if (beforeCommit) await beforeCommit();
+    deferredSettle.cancel(threadId);
     // Settling clears any snooze: they are two answers to the same
     // question, and holding both would make the shelf order ambiguous.
     const now = Date.now();
@@ -1242,7 +1246,10 @@ export default async function plugin(bb: BbPluginApi) {
     return reclaimThreadResources(threadId, "everything");
   };
 
+  const deferredSettle = registerDeferredSettle(bb, settleThread);
+
   const unsettleThread = (threadId: string): void => {
+    deferredSettle.cancel(threadId);
     const current = readOne(threadId);
     write({
       threadId,
@@ -1257,6 +1264,9 @@ export default async function plugin(bb: BbPluginApi) {
     isSettled: (threadId) => readOne(threadId)?.settledAt != null,
     settle: settleThread,
     unsettle: unsettleThread,
+    request: deferredSettle.request,
+    cancel: deferredSettle.cancel,
+    isPending: deferredSettle.isPending,
   });
 
   bb.rpc.register(bbSidebarRpcContract, {

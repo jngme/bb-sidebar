@@ -3,6 +3,8 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   createFakePluginHost,
   makeThreadResponse,
+  makeQueueEntry,
+  makeMessageDispatchHookContext,
 } from "@get-bb/plugin-sdk/testing";
 import plugin, { type StoredLifecycleRow } from "./server";
 
@@ -829,6 +831,130 @@ describe("sidebar CLI", () => {
         stdout: expect.stringContaining("bb sidebar settle <threadId...>"),
       });
     }
+  });
+});
+
+describe("deferred settle", () => {
+  async function setup() {
+    const harness = await loadPlugin();
+    let current = makeThreadResponse({ id: "thr_1", status: "active" });
+    let commands = 0;
+    let interaction = false;
+    harness.inspection.sdk.stub("threads.get", async () => current);
+    harness.inspection.sdk.stub("threads.list", async () => [{
+      ...current,
+      activity: { activeBackgroundAgentCount: current.activeBackgroundAgentCount, activeBackgroundCommandCount: commands, activeGoalCount: 0, activePlanModeCount: 0, activeWorkflowCount: 0 },
+      queuedWork: current.queuedMessageCount > 0 ? "waiting" as const : "none" as const,
+      hasPendingInteraction: interaction,
+      pinSortKey: null,
+      environmentBranchName: null, environmentHostId: null, environmentName: null,
+      environmentPath: null, environmentProviderId: null, environmentIsWorktree: false,
+      environmentWorkspaceDisplayKind: "other" as const,
+      runtime: { displayStatus: current.status, hostReconnectGraceExpiresAt: null },
+    }]);
+    const request = () => harness.behavior.runCli(["settle", "--when-idle", "thr_1"]);
+    const status = async () => (await harness.behavior.runCli(["settle-status", "thr_1"])).stdout;
+    const idle = async () => {
+      current = { ...current, status: "idle" };
+      await harness.behavior.emitThreadEvent("thread.idle", { thread: current, lastAssistantText: "Finished" });
+    };
+    return { harness, request, status, idle,
+      setThread: (patch: Partial<typeof current>) => { current = { ...current, ...patch }; },
+      setCommands: (count: number) => { commands = count; },
+      setInteraction: (value: boolean) => { interaction = value; },
+    };
+  }
+
+  it("accepts a request during a turn and settles only after idle, without launching an automation", async () => {
+    const t = await setup();
+    expect((await t.request()).exitCode).toBe(0);
+    expect(await t.status()).toContain("settle pending");
+    expect(t.harness.inspection.sdk.callsTo("threads.unpin")).toEqual([]);
+    await t.idle();
+    expect(await t.status()).toContain("no pending settle");
+    expect(await t.harness.behavior.callRpc("listLifecycle", {})).toMatchObject({ rows: [{ threadId: "thr_1", settledOverride: "settled" }] });
+  });
+
+  it("cancels explicitly without stopping the thread", async () => {
+    const t = await setup();
+    await t.request();
+    expect((await t.harness.behavior.runCli(["cancel-settle", "thr_1"])).stdout).toContain("cancelled pending settle");
+    await t.idle();
+    expect(t.harness.inspection.sdk.callsTo("threads.unpin")).toEqual([]);
+    expect((await t.harness.behavior.runCli(["cancel-settle", "thr_1"])).stdout).toContain("no pending settle");
+  });
+
+  it("cancels on queued messages and immediate dispatch", async () => {
+    const t = await setup();
+    await t.request();
+    await t.harness.behavior.emitThreadEvent("message.queued", { entry: makeQueueEntry({ threadId: "thr_1" }) });
+    expect(await t.status()).toContain("no pending settle");
+    await t.request();
+    const hook = t.harness.inspection.registrations.hooks["message.dispatch"]!;
+    expect(await hook(makeMessageDispatchHookContext({ thread: makeThreadResponse({ id: "thr_1" }) }))).toEqual({ action: "proceed" });
+    await t.idle();
+    expect(t.harness.inspection.sdk.callsTo("threads.unpin")).toEqual([]);
+  });
+
+  it.each(["commands", "queue", "agents", "interaction"])("waits for %s before cleanup", async (kind) => {
+    const t = await setup();
+    await t.request();
+    if (kind === "commands") t.setCommands(1);
+    if (kind === "queue") t.setThread({ queuedMessageCount: 1 });
+    if (kind === "agents") t.setThread({ activeBackgroundAgentCount: 1 });
+    if (kind === "interaction") t.setInteraction(true);
+    await t.idle();
+    expect(await t.status()).toContain("settle pending");
+    expect(t.harness.inspection.sdk.callsTo("threads.unpin")).toEqual([]);
+    t.setCommands(0); t.setInteraction(false); t.setThread({ queuedMessageCount: 0, activeBackgroundAgentCount: 0 });
+    await t.harness.behavior.runSchedule("deferred-settle");
+    expect(await t.status()).toContain("no pending settle");
+  });
+
+  it("preserves intent across reload and completes from the fallback sweep", async () => {
+    const t = await setup();
+    await t.request();
+    const next = await t.harness.lifecycle.reload(plugin);
+    disposers.push(() => next.harness.lifecycle.dispose());
+    next.harness.inspection.sdk.stub("threads.get", async () => makeThreadResponse({ id: "thr_1", status: "idle" }));
+    next.harness.inspection.sdk.stub("threads.list", async () => [{ ...makeThreadResponse({ id: "thr_1", status: "idle" }), queuedWork: "none", hasPendingInteraction: false, activity: { activeBackgroundAgentCount: 0, activeBackgroundCommandCount: 0, activeGoalCount: 0, activePlanModeCount: 0, activeWorkflowCount: 0 } }]);
+    next.harness.inspection.sdk.stub("threads.unpin", async () => makeThreadResponse({ id: "thr_1" }));
+    const status = async () => (await next.harness.behavior.runCli(["settle-status", "thr_1"])).stdout;
+    expect(await status()).toContain("settle pending");
+    t.setThread({ status: "idle" });
+    await next.harness.behavior.runSchedule("deferred-settle");
+    expect(await status()).toContain("no pending settle");
+  });
+
+  it("keeps the request when host lookup fails and retries it", async () => {
+    const t = await setup();
+    await t.request();
+    t.setThread({ status: "idle" });
+    t.harness.inspection.sdk.stub("threads.unpin", async () => { throw new Error("Project has no local-path source for host"); });
+    await t.harness.behavior.runSchedule("deferred-settle");
+    expect(await t.status()).toContain("settle pending");
+    t.harness.inspection.sdk.stub("threads.unpin", async () => makeThreadResponse({ id: "thr_1" }));
+    await t.harness.behavior.runSchedule("deferred-settle");
+    expect(await t.status()).toContain("no pending settle");
+  });
+
+  it("honours cancellation while unpin is in flight", async () => {
+    const t = await setup();
+    await t.request();
+    t.harness.inspection.sdk.stub("threads.unpin", async () => {
+      await t.harness.behavior.runCli(["cancel-settle", "thr_1"]);
+      return makeThreadResponse({ id: "thr_1" });
+    });
+    await t.idle();
+    expect(await t.harness.behavior.callRpc("listLifecycle", {})).toEqual({ rows: [] });
+    expect(t.harness.inspection.sdk.callsTo("threads.stop")).toEqual([]);
+  });
+
+  it("cancels on failure, rather than hiding a failed thread", async () => {
+    const t = await setup();
+    await t.request();
+    await t.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "Failed" });
+    expect(await t.status()).toContain("no pending settle");
   });
 });
 

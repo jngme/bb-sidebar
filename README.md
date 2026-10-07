@@ -38,6 +38,9 @@ Agents and scripts can settle threads the same way the sidebar does:
 ```sh
 bb sidebar settle <threadId...>
 bb sidebar unsettle <threadId...>
+bb sidebar settle --when-idle <threadId...>
+bb sidebar cancel-settle <threadId...>
+bb sidebar settle-status <threadId...>
 ```
 
 `settle` matches the **Settle** action. `unsettle` matches **Restore** on the Settled shelf. Each takes up to 50 thread ids. `settle` refuses a thread that is still working. See [skills/bb-sidebar/SKILL.md](skills/bb-sidebar/SKILL.md) for output and exit codes.

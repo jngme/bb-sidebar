@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Agents can request their own settle with `bb sidebar settle --when-idle`. Requests persist across reloads and wait for idle with no queued messages, background work, or pending interactions. `cancel-settle` withdraws a request and `settle-status` checks it. New messages and failures cancel requests. The server handles this directly, without a script automation or scheduling-host checkout.
+
 ### Added
 
 - `bb sidebar settle <threadId...>` and `bb sidebar unsettle <threadId...>` let agents and scripts settle threads and restore them, the same as the sidebar's **Settle** and **Restore** actions. Each takes up to 50 thread ids and reports one line per thread. `settle` refuses a thread that is still working. The plugin now ships a `bb-sidebar` skill that documents the commands for agents.

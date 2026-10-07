@@ -10,23 +10,36 @@ const THREAD_ID_PATTERN = /^thr_[A-Za-z0-9_-]{1,64}$/;
 const USAGE = {
   settle: "bb sidebar settle <threadId...>",
   unsettle: "bb sidebar unsettle <threadId...>",
+  "cancel-settle": "bb sidebar cancel-settle <threadId...>",
+  "settle-status": "bb sidebar settle-status <threadId...>",
 } as const;
 
 type Action = keyof typeof USAGE;
 
 const HELP = `Usage:
   ${USAGE.settle}
+  bb sidebar settle --when-idle <threadId...>
   ${USAGE.unsettle}
+  ${USAGE["cancel-settle"]}
+  ${USAGE["settle-status"]}
 
 settle    Move threads to the Settled shelf, as the sidebar's Settle action
           does. Refuses a thread that is still working.
 unsettle  Return settled threads to the inbox, as the sidebar's Restore
           action does. A thread that is not settled is left alone.
 
+--when-idle records a durable request; settle runs after the turn finishes.
+New messages, failed turns, or pending interactions cancel that request.
+cancel-settle withdraws a pending request without stopping the thread.
+settle-status reports whether a request is pending.
+
 Takes 1 to ${SETTLE_CLI_MAX_THREADS} thread ids, such as thr_abc123.
 `;
 
 export interface SettleCliActions {
+  request(threadId: string): void;
+  cancel(threadId: string): boolean;
+  isPending(threadId: string): boolean;
   isSettled(threadId: string): boolean;
   settle(threadId: string): Promise<ReclaimSummary>;
   unsettle(threadId: string): void;
@@ -74,7 +87,7 @@ function parseArgs(
   argv: readonly string[],
 ):
   | { kind: "help" }
-  | { kind: "run"; action: Action; threadIds: string[] }
+  | { kind: "run"; action: Action; whenIdle: boolean; threadIds: string[] }
   | { kind: "error"; result: PluginCliResult } {
   const [command, ...rest] = argv;
   if (
@@ -85,20 +98,22 @@ function parseArgs(
   ) {
     return { kind: "help" };
   }
-  if (command !== "settle" && command !== "unsettle") {
+  if (command !== "settle" && command !== "unsettle" && command !== "cancel-settle" && command !== "settle-status") {
     return {
       kind: "error",
       result: usageError(`Unknown command: ${command}`),
     };
   }
-  const option = rest.find((arg) => arg.startsWith("-"));
+  const whenIdle = command === "settle" && rest.includes("--when-idle");
+  const args = whenIdle ? rest.filter((arg) => arg !== "--when-idle") : rest;
+  const option = args.find((arg) => arg.startsWith("-"));
   if (option !== undefined) {
     return {
       kind: "error",
       result: usageError(`Unknown option: ${option}`),
     };
   }
-  const threadIds = [...new Set(rest)];
+  const threadIds = [...new Set(args)];
   if (threadIds.length === 0) {
     return {
       kind: "error",
@@ -122,7 +137,7 @@ function parseArgs(
       ),
     };
   }
-  return { kind: "run", action: command, threadIds };
+  return { kind: "run", action: command, whenIdle, threadIds };
 }
 
 export function registerSettleCli(
@@ -148,11 +163,20 @@ export function registerSettleCli(
   const run = async (
     action: Action,
     threadIds: string[],
+    whenIdle: boolean,
   ): Promise<PluginCliResult> => {
     const lines = new Map<string, string>();
     const { failures } = await runThreadTasks(threadIds, async (threadId) => {
       const thread = await existingThread(threadId);
-      if (action === "settle") {
+      if (action === "cancel-settle") {
+        lines.set(threadId, actions.cancel(threadId) ? `cancelled pending settle for ${threadId}` : `${threadId} has no pending settle; left unchanged`);
+      } else if (action === "settle-status") {
+        lines.set(threadId, actions.isPending(threadId) ? `${threadId}: settle pending` : `${threadId}: no pending settle`);
+      } else if (action === "settle" && whenIdle) {
+        if (thread.archivedAt !== null || thread.status === "error") throw new Error("cannot defer settle for an archived or failed thread");
+        actions.request(threadId);
+        lines.set(threadId, `settle pending for ${threadId}; cancel with bb sidebar cancel-settle ${threadId}`);
+      } else if (action === "settle") {
         if (isWorking(thread)) {
           throw new Error("still working; settle it once it is idle");
         }
@@ -162,6 +186,7 @@ export function registerSettleCli(
         actions.unsettle(threadId);
         lines.set(threadId, `unsettled ${threadId}`);
       } else {
+        actions.cancel(threadId);
         lines.set(threadId, `${threadId} was not settled; left unchanged`);
       }
     });
@@ -181,6 +206,8 @@ export function registerSettleCli(
     name: "sidebar",
     summary: "Settle and unsettle threads on the BB Sidebar",
     commands: [
+      { name: "cancel-settle", summary: "Cancel a pending settle", usage: USAGE["cancel-settle"] },
+      { name: "settle-status", summary: "Check a pending settle", usage: USAGE["settle-status"] },
       {
         name: "settle",
         summary: "Move threads to the Settled shelf",
@@ -196,7 +223,7 @@ export function registerSettleCli(
       const parsed = parseArgs(argv);
       if (parsed.kind === "help") return { exitCode: 0, stdout: HELP };
       if (parsed.kind === "error") return parsed.result;
-      return run(parsed.action, parsed.threadIds);
+      return run(parsed.action, parsed.threadIds, parsed.whenIdle);
     },
   });
 }
